@@ -78,6 +78,17 @@ button:disabled { opacity: 0.5; cursor: default; }
 <main>
   <h1 id="title">Setup</h1>
   <p class="status" id="status">Loading</p>
+  <div class="card hidden" id="signin">
+    <div class="field">
+      <label for="pw">Admin password</label>
+      <div class="row">
+        <input type="password" id="pw" autocomplete="current-password" autocapitalize="off">
+        <button type="button" id="signbtn">Sign In</button>
+      </div>
+      <div class="help">The user is admin. This is the password set on this page earlier.</div>
+      <div class="err hidden" id="pwerr">Incorrect password.</div>
+    </div>
+  </div>
   <form id="form" autocomplete="off" novalidate></form>
   <div class="actions">
     <button class="primary" id="save" type="button" disabled>Save and restart</button>
@@ -92,6 +103,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 "use strict";
 const $ = (id) => document.getElementById(id);
 let state = null;
+let auth = sessionStorage.getItem("bu_auth") || "";
 
 function el(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -190,10 +202,42 @@ function render() {
   $("save").disabled = false;
 }
 
+class AuthError extends Error {}
+
 async function api(path, opts) {
-  const r = await fetch(path, Object.assign({ credentials: "same-origin", cache: "no-store" }, opts));
-  if (r.status === 401) throw new Error("Sign in as admin to change settings.");
+  opts = Object.assign({ cache: "no-store" }, opts);
+  // X-Bringup: the server answers 401 without a browser challenge, so this page asks instead.
+  opts.headers = Object.assign({ "X-Bringup": "1" }, opts.headers || {});
+  if (auth) opts.headers.Authorization = "Basic " + auth;
+  const r = await fetch(path, opts);
+  if (r.status === 401) throw new AuthError("Sign in to change settings.");
   return r;
+}
+
+function showSignIn(failed) {
+  $("signin").classList.remove("hidden");
+  $("pwerr").classList.toggle("hidden", !failed);
+  $("status").textContent = "Sign in to change settings.";
+  $("save").disabled = true;
+  $("pw").focus();
+}
+
+async function signIn() {
+  const pw = $("pw").value;
+  if (!pw) return;
+  auth = btoa(unescape(encodeURIComponent("admin:" + pw)));
+  try {
+    const r = await api("/api/setup");
+    state = await r.json();
+    sessionStorage.setItem("bu_auth", auth);
+    $("pw").value = "";
+    $("signin").classList.add("hidden");
+    render();
+  } catch (e) {
+    auth = "";
+    if (e instanceof AuthError) showSignIn(true);
+    else $("status").textContent = e.message || "Could not load settings.";
+  }
 }
 
 async function load() {
@@ -202,7 +246,8 @@ async function load() {
     state = await r.json();
     render();
   } catch (e) {
-    $("status").textContent = e.message || "Could not load settings.";
+    if (e instanceof AuthError) { auth = ""; sessionStorage.removeItem("bu_auth"); showSignIn(false); }
+    else $("status").textContent = e.message || "Could not load settings.";
   }
 }
 
@@ -290,6 +335,8 @@ async function action(what) {
 }
 
 $("save").addEventListener("click", save);
+$("signbtn").addEventListener("click", signIn);
+$("pw").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); signIn(); } });
 $("restart").addEventListener("click", () => action("reboot"));
 $("bringup").addEventListener("click", () => action("bringup"));
 load();

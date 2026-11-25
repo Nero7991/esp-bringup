@@ -66,7 +66,11 @@ bool bringup_auth(httpd_req_t *req)
     memset(pass, 0, sizeof(pass));
     if (!ok) {
         httpd_resp_set_status(req, "401 Unauthorized");
-        httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"setup\"");
+        // The setup page sends X-Bringup and shows its own sign-in: captive-portal browsers do not
+        // show the native prompt, and a full browser would otherwise show both.
+        if (httpd_req_get_hdr_value_len(req, "X-Bringup") == 0) {
+            httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"setup\"");
+        }
         httpd_resp_sendstr(req, "Unauthorized\n");
     }
     return ok;
