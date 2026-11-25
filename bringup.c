@@ -399,9 +399,16 @@ esp_err_t bringup_init(const bringup_config_t *cfg)
     uint8_t limit = cfg->power_cycles ? cfg->power_cycles : 3;
     uint16_t window = cfg->power_cycle_window_s ? cfg->power_cycle_window_s : 10;
     bool by_cycles = false;
-    if (limit != 255 && esp_reset_reason() == ESP_RST_POWERON) {
+    // A short unplug often browns the chip out instead of a clean power-on reset: both count.
+    esp_reset_reason_t rr = esp_reset_reason();
+    if (limit != 255 && (rr == ESP_RST_POWERON || rr == ESP_RST_BROWNOUT)) {
         uint8_t n = sys_get_u8(KEY_PCNT) + 1;
-        ESP_LOGI(TAG, "quick power cycle %u of %u", n, limit);
+        if (n > limit) {
+            ESP_LOGW(TAG, "quick boot %u in a row: entering bring-up", n);
+        } else {
+            ESP_LOGI(TAG, "quick boot %u in a row; bring-up on boot %u if this one ends within %u s",
+                     n, limit + 1, window);
+        }
         if (n > limit) { // limit quick boots, then this one
             by_cycles = true;
             n = 0;
@@ -434,6 +441,11 @@ esp_err_t bringup_init(const bringup_config_t *cfg)
         snprintf(s_reason, sizeof(s_reason), "requested");
     } else if (by_cycles) {
         snprintf(s_reason, sizeof(s_reason), "power cycles");
+    } else if (cfg->external_trigger) {
+        const char *why = cfg->external_trigger();
+        if (why && why[0]) {
+            snprintf(s_reason, sizeof(s_reason), "%s", why);
+        }
     }
     s_active = s_reason[0] != '\0';
     if (s_active) {

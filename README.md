@@ -81,6 +81,11 @@ second and lists what it reports, and the user picks one to fill the field. Clos
 the timeout calls `stop()`. esp32-WoLviaBT uses it to find a controller's address: "press the PS
 button" and the board lists whatever pages it.
 
+`external_trigger` in the config lets another component decide that this boot enters bring-up,
+for example esp-recover's power-cycle counter, which counts earlier in boot than bring-up can. Set
+`power_cycles = 255` to turn off the built-in counter. The built-in counter also counts brownout
+resets, because a short unplug often browns the chip out instead of a clean power-on.
+
 `on_seed` in the config runs before the mode decision: call `bringup_seed(key, value)` there to fill
 settings from build-time defaults or to migrate an older firmware's storage. It only writes keys
 that have no value.

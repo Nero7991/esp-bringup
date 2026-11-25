@@ -115,6 +115,10 @@ typedef struct {
     // Optional: called inside bringup_init() before the mode decision. Use bringup_seed() here to
     // fill settings from build-time defaults or migrate them from an older firmware's storage.
     void (*on_seed)(void);
+    // Optional: an outside reason to enter bring-up this boot (e.g. esp-recover's power-cycle
+    // trigger). Return a short reason, or NULL/"" for none. Set power_cycles = 255 when another
+    // component counts power cycles.
+    const char *(*external_trigger)(void);
 } bringup_config_t;
 
 // Call once after nvs_flash_init, esp_netif_init and esp_event_loop_create_default. Decides
@@ -127,7 +131,8 @@ esp_err_t bringup_init(const bringup_config_t *cfg);
 esp_err_t bringup_register_http(httpd_handle_t server);
 
 bool bringup_active(void);      // in bring-up mode this boot
-const char *bringup_reason(void); // why ("not configured: bt_pad", "requested", "power cycles", "")
+const char *bringup_reason(void); // why ("not configured: bt_pad", "requested", "power cycles",
+                                  // the external trigger's reason, or "")
 bool bringup_hotspot_up(void);  // hotspot running (bring-up mode or Wi-Fi fallback)
 bool bringup_wifi_connected(void);
 
