@@ -134,6 +134,8 @@ static esp_err_t setup_get(httpd_req_t *req)
     return send_json(req, root);
 }
 
+// 4096: bringup_enter() logs and writes NVS on this stack, and a project's log hook (netserial)
+// runs on it too. At 2048 it overflowed and the device rebooted by panic without the flag set.
 static void restart_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS(800)); // let the response leave
@@ -224,7 +226,7 @@ static esp_err_t setup_post(httpd_req_t *req)
     cJSON_AddBoolToObject(out, "reboot", reboot);
     esp_err_t e = send_json(req, out);
     if (reboot) {
-        xTaskCreate(restart_task, "bu_restart", 2048, NULL, 5, NULL);
+        xTaskCreate(restart_task, "bu_restart", 4096, NULL, 5, NULL);
     }
     return e;
 }
@@ -263,7 +265,7 @@ static esp_err_t action_post(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "do=reboot|bringup");
     }
     httpd_resp_sendstr(req, to_bringup ? "restarting into bring-up mode\n" : "restarting\n");
-    xTaskCreate(restart_task, "bu_restart", 2048, to_bringup ? (void *)1 : NULL, 5, NULL);
+    xTaskCreate(restart_task, "bu_restart", 4096, to_bringup ? (void *)1 : NULL, 5, NULL);
     return ESP_OK;
 }
 

@@ -10,6 +10,8 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "nvs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "bringup";
 
@@ -94,10 +96,16 @@ static uint8_t sys_get_u8(const char *key)
 static void sys_set_u8(const char *key, uint8_t v)
 {
     nvs_handle_t h;
-    if (nvs_open(g_bu_cfg->nvs_namespace, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, key, v);
-        nvs_commit(h);
+    esp_err_t e = nvs_open(g_bu_cfg->nvs_namespace, NVS_READWRITE, &h);
+    if (e == ESP_OK) {
+        e = nvs_set_u8(h, key, v);
+        if (e == ESP_OK) {
+            e = nvs_commit(h);
+        }
         nvs_close(h);
+    }
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "NVS write %s failed: %s", key, esp_err_to_name(e));
     }
 }
 
@@ -358,6 +366,7 @@ void bringup_enter(void)
 {
     ESP_LOGW(TAG, "entering bring-up mode on request");
     sys_set_u8(KEY_FORCE, 1);
+    vTaskDelay(pdMS_TO_TICKS(300)); // let netserial ship the lines above
     esp_restart();
 }
 
@@ -381,6 +390,7 @@ esp_err_t bringup_init(const bringup_config_t *cfg)
         g_bu_fields[g_bu_nfields++] = &cfg->fields[i];
     }
 
+    ESP_LOGI(TAG, "reset reason %d", (int)esp_reset_reason());
     if (cfg->on_seed) {
         cfg->on_seed();
     }
