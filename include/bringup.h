@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 // URI handlers bringup_register_http() adds to the project's server.
-#define BRINGUP_HTTP_HANDLERS 5
+#define BRINGUP_HTTP_HANDLERS 7
 
 // Built-in setting keys, always present, listed before the project's fields.
 #define BRINGUP_KEY_WIFI_SSID  "wifi_ssid"
@@ -45,6 +45,47 @@ typedef enum {
     BRINGUP_T_CHOICE, // one of the '|' separated values in choices
 } bringup_type_t;
 
+// ---- detect: a project-specific "find this value" flow for a field ----
+//
+// The page shows a button next to the field. Pressing it opens a dialog with the prompt, calls
+// start() with the values currently in the form (saved or not), then polls about once a second and
+// lists what poll() reports; the user picks one and it fills the field. Closing the dialog or the
+// timeout calls stop(). The callbacks run on the HTTP server task: keep them short.
+
+#define BRINGUP_DETECT_MAX 6
+
+typedef enum {
+    BRINGUP_DETECT_WAITING, // still looking; found[] may already hold candidates
+    BRINGUP_DETECT_DONE,    // finished; found[] holds the result
+    BRINGUP_DETECT_FAILED,  // message says why
+} bringup_detect_state_t;
+
+typedef struct {
+    bringup_detect_state_t state;
+    char message[96]; // shown under the prompt (optional)
+    uint8_t n;
+    struct {
+        char value[64]; // what goes into the field
+        char label[64]; // what the user sees, e.g. "Game controller, 3 requests"
+    } found[BRINGUP_DETECT_MAX];
+} bringup_detect_result_t;
+
+// The form's current values, passed to start(). Falls back to the stored value for keys the form
+// did not send.
+typedef struct bringup_values bringup_values_t;
+bool bringup_values_get(const bringup_values_t *v, const char *key, char *out, size_t len);
+
+typedef struct {
+    const char *button;  // button text, e.g. "Detect"
+    const char *title;   // dialog title
+    const char *prompt;  // instruction, e.g. "Press the PS button on the controller."
+    uint16_t timeout_s;  // stop polling after this (0: 60)
+    // Return ESP_OK to start, or an error with a message for the user in err.
+    esp_err_t (*start)(const char *key, const bringup_values_t *form, char *err, size_t errlen);
+    void (*poll)(const char *key, bringup_detect_result_t *out);
+    void (*stop)(const char *key);
+} bringup_detect_t;
+
 typedef struct {
     const char *key;      // NVS key, at most 15 characters, unique
     const char *label;    // shown on the page
@@ -56,6 +97,7 @@ typedef struct {
     bool secret;          // never sent back to the page or logged; empty input keeps the old value
     int32_t min, max;     // see bringup_type_t
     const char *choices;  // BRINGUP_T_CHOICE: "a|b|c"
+    const bringup_detect_t *detect; // optional "find this value" flow, see above
 } bringup_field_t;
 
 typedef struct {
@@ -67,7 +109,8 @@ typedef struct {
     const bringup_field_t *fields;
     size_t n_fields;
     uint8_t sta_fail_limit;      // failed connects before the fallback hotspot (0: 5)
-    uint8_t power_cycles;        // quick power cycles that force bring-up (0: 3; 255: off)
+    uint8_t power_cycles;        // boots ended within the window in a row; the next boot
+                                 // enters bring-up (0: 3; 255: off)
     uint16_t power_cycle_window_s; // uptime after which a boot no longer counts (0: 10)
     // Optional: called inside bringup_init() before the mode decision. Use bringup_seed() here to
     // fill settings from build-time defaults or migrate them from an older firmware's storage.

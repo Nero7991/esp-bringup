@@ -402,7 +402,7 @@ esp_err_t bringup_init(const bringup_config_t *cfg)
     if (limit != 255 && esp_reset_reason() == ESP_RST_POWERON) {
         uint8_t n = sys_get_u8(KEY_PCNT) + 1;
         ESP_LOGI(TAG, "quick power cycle %u of %u", n, limit);
-        if (n >= limit) {
+        if (n > limit) { // limit quick boots, then this one
             by_cycles = true;
             n = 0;
         }

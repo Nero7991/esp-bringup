@@ -17,7 +17,8 @@ v5.5.6). Modelled on the QuickVolt bring-up flow.
   `/setup`, so phones open the page by themselves. If Wi-Fi credentials are saved, the device keeps
   joining that network too, so it stays reachable there.
 - **Entered when:** a required setting is empty (a fresh board), `POST /api/setup/action?do=bringup`,
-  or N quick power cycles in a row (default 3 boots that each end within 10 s).
+  or N quick power cycles in a row (default 3: three boots that each end within 10 s, then the
+  fourth boot enters bring-up).
 - **Wi-Fi fallback:** after N failed connects (default 5) the hotspot comes up next to the
   retries, and goes away again once the network is back.
 - **Page** `/setup`: Apple-style, light and dark, Wi-Fi scan, per-field validation messages, secrets
@@ -74,6 +75,12 @@ Field types: `BRINGUP_T_STRING` (length `min`..`max`), `BRINGUP_T_MAC`, `BRINGUP
 bytes), `BRINGUP_T_INT` (`min`..`max`), `BRINGUP_T_BOOL`, `BRINGUP_T_CHOICE` (`choices = "a|b|c"`).
 Keys are NVS keys (15 characters at most); keys starting with `_` are reserved.
 
+A field can have a `detect` flow: a button next to it opens a dialog with the project's prompt, the
+component calls the project's `start()` with the form's current values, polls `poll()` about once a
+second and lists what it reports, and the user picks one to fill the field. Closing the dialog or
+the timeout calls `stop()`. esp32-WoLviaBT uses it to find a controller's address: "press the PS
+button" and the board lists whatever pages it.
+
 `on_seed` in the config runs before the mode decision: call `bringup_seed(key, value)` there to fill
 settings from build-time defaults or to migrate an older firmware's storage. It only writes keys
 that have no value.
@@ -87,12 +94,19 @@ that have no value.
 | POST | `/api/setup` | `{"values":{"key":"value",...},"reboot":true}`. All values are validated first; nothing is written unless all are valid. Errors come back as `{"ok":false,"errors":{"key":"message"}}` |
 | GET | `/api/setup/scan` | `[{"ssid","rssi","secure"}]` |
 | POST | `/api/setup/action?do=reboot` or `?do=bringup` | restart, or restart into bring-up mode |
+| POST | `/api/setup/detect?key=K&do=start` (body `{"values":{...}}`) or `&do=stop` | start or stop a field's detect flow |
+| GET | `/api/setup/detect?key=K` | `{"state":"waiting"/"done"/"failed","message","found":[{"value","label"}]}` |
 
 ## Requirements
 
 ESP-IDF 5.x with `esp_wifi`, `esp_http_server`, `json` (cJSON) and `mbedtls`. The component owns
 Wi-Fi: the project must not call `esp_wifi_init` itself. It needs `BRINGUP_HTTP_HANDLERS` free URI
 handler slots on the project's server and installs the server's 404 handler.
+
+Set `lru_purge_enable = true` on the server and consider `CONFIG_LWIP_MAX_SOCKETS=16`. Phones on
+the hotspot open several captive-portal probe connections and leave them idle; with the defaults
+(10 sockets, no purge) they filled the socket table on an ESP32 and every new connection failed
+with `httpd_accept_conn: error in accept (23)`.
 
 ## License
 

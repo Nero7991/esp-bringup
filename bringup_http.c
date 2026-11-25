@@ -5,6 +5,8 @@
 //   POST /api/setup             {"values":{key:value,...},"reboot":true|false}
 //   GET  /api/setup/scan        nearby Wi-Fi networks
 //   POST /api/setup/action      ?do=reboot | ?do=bringup
+//   POST /api/setup/detect      ?key=K&do=start (body {"values":{...}}) | ?key=K&do=stop
+//   GET  /api/setup/detect      ?key=K   poll
 // While the hotspot is up, unknown URLs redirect to /setup (captive portal).
 
 #include "bringup_priv.h"
@@ -129,6 +131,13 @@ static esp_err_t setup_get(httpd_req_t *req)
         cJSON_AddNumberToObject(o, "min", f->min);
         cJSON_AddNumberToObject(o, "max", f->max);
         if (f->choices) cJSON_AddStringToObject(o, "choices", f->choices);
+        if (f->detect) {
+            cJSON *d = cJSON_AddObjectToObject(o, "detect");
+            cJSON_AddStringToObject(d, "button", f->detect->button ? f->detect->button : "Detect");
+            cJSON_AddStringToObject(d, "title", f->detect->title ? f->detect->title : f->label);
+            cJSON_AddStringToObject(d, "prompt", f->detect->prompt ? f->detect->prompt : "");
+            cJSON_AddNumberToObject(d, "timeout", f->detect->timeout_s ? f->detect->timeout_s : 60);
+        }
         if (f->def) cJSON_AddStringToObject(o, "default", f->def);
         cJSON_AddBoolToObject(o, "set", set);
         cJSON_AddStringToObject(o, "value", (set && !f->secret) ? v : "");
@@ -273,6 +282,114 @@ static esp_err_t action_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+// ---- detect ----
+
+struct bringup_values {
+    const cJSON *obj;
+};
+
+bool bringup_values_get(const bringup_values_t *v, const char *key, char *out, size_t len)
+{
+    const cJSON *it = v && v->obj ? cJSON_GetObjectItemCaseSensitive(v->obj, key) : NULL;
+    if (cJSON_IsString(it) && it->valuestring[0]) {
+        snprintf(out, len, "%s", it->valuestring);
+        return true;
+    }
+    return bringup_get_str(key, out, len);
+}
+
+static const bringup_field_t *detect_field(httpd_req_t *req, char *q, size_t qlen, char *op,
+                                           size_t oplen)
+{
+    char key[16];
+    op[0] = '\0';
+    if (httpd_req_get_url_query_str(req, q, qlen) != ESP_OK ||
+        httpd_query_key_value(q, "key", key, sizeof(key)) != ESP_OK) {
+        return NULL;
+    }
+    httpd_query_key_value(q, "do", op, oplen);
+    const bringup_field_t *f = bu_field(key);
+    return f && f->detect ? f : NULL;
+}
+
+static esp_err_t detect_post(httpd_req_t *req)
+{
+    if (!bringup_auth(req)) {
+        return ESP_OK;
+    }
+    char q[64], op[8];
+    const bringup_field_t *f = detect_field(req, q, sizeof(q), op, sizeof(op));
+    if (!f) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "key=<field with detect>");
+    }
+    if (strcmp(op, "stop") == 0) {
+        if (f->detect->stop) {
+            f->detect->stop(f->key);
+        }
+        return httpd_resp_sendstr(req, "{\"ok\":true}");
+    }
+    if (strcmp(op, "start") != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "do=start|stop");
+    }
+    cJSON *in = NULL;
+    if (req->content_len > 0 && req->content_len <= 4096) {
+        char *body = calloc(1, req->content_len + 1);
+        size_t got = 0;
+        while (body && got < req->content_len) {
+            int r = httpd_req_recv(req, body + got, req->content_len - got);
+            if (r <= 0) {
+                break;
+            }
+            got += r;
+        }
+        if (body) {
+            in = cJSON_Parse(body);
+            memset(body, 0, got);
+            free(body);
+        }
+    }
+    bringup_values_t vals = { .obj = in ? cJSON_GetObjectItem(in, "values") : NULL };
+    char err[96] = "";
+    esp_err_t e = f->detect->start ? f->detect->start(f->key, &vals, err, sizeof(err)) : ESP_FAIL;
+    cJSON_Delete(in);
+    cJSON *out = cJSON_CreateObject();
+    cJSON_AddBoolToObject(out, "ok", e == ESP_OK);
+    if (e != ESP_OK) {
+        cJSON_AddStringToObject(out, "error", err[0] ? err : esp_err_to_name(e));
+    }
+    return send_json(req, out);
+}
+
+static esp_err_t detect_get(httpd_req_t *req)
+{
+    if (!bringup_auth(req)) {
+        return ESP_OK;
+    }
+    char q[64], op[8];
+    const bringup_field_t *f = detect_field(req, q, sizeof(q), op, sizeof(op));
+    if (!f || !f->detect->poll) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "key=<field with detect>");
+    }
+    bringup_detect_result_t *r = calloc(1, sizeof(*r));
+    if (!r) {
+        return httpd_resp_send_500(req);
+    }
+    f->detect->poll(f->key, r);
+    static const char *states[] = { "waiting", "done", "failed" };
+    cJSON *out = cJSON_CreateObject();
+    cJSON_AddStringToObject(out, "state", (unsigned)r->state < 3 ? states[r->state] : "failed");
+    cJSON_AddStringToObject(out, "message", r->message);
+    cJSON *arr = cJSON_AddArrayToObject(out, "found");
+    for (int i = 0; i < r->n && i < BRINGUP_DETECT_MAX; i++) {
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "value", r->found[i].value);
+        cJSON_AddStringToObject(o, "label", r->found[i].label);
+        cJSON_AddItemToArray(arr, o);
+    }
+    free(r);
+    return send_json(req, out);
+}
+
 static esp_err_t not_found(httpd_req_t *req, httpd_err_code_t err)
 {
     if (bringup_hotspot_up()) {
@@ -291,6 +408,8 @@ esp_err_t bringup_register_http(httpd_handle_t server)
         { .uri = "/api/setup", .method = HTTP_POST, .handler = setup_post },
         { .uri = "/api/setup/scan", .method = HTTP_GET, .handler = scan_get },
         { .uri = "/api/setup/action", .method = HTTP_POST, .handler = action_post },
+        { .uri = "/api/setup/detect", .method = HTTP_POST, .handler = detect_post },
+        { .uri = "/api/setup/detect", .method = HTTP_GET, .handler = detect_get },
     };
     for (size_t i = 0; i < BRINGUP_HTTP_HANDLERS; i++) {
         esp_err_t e = httpd_register_uri_handler(server, &uris[i]);

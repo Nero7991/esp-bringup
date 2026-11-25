@@ -72,6 +72,21 @@ button:disabled { opacity: 0.5; cursor: default; }
 .secondary button { flex: 1; }
 .notice { background: var(--card); border-radius: 12px; padding: 16px; margin-top: 16px; }
 .hidden { display: none; }
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
+@media (min-width: 600px) { .scrim { align-items: center; } }
+.sheet { background: var(--card); width: 100%; max-width: 480px; border-radius: 14px 14px 0 0; padding: 22px 20px 28px; }
+@media (min-width: 600px) { .sheet { border-radius: 14px; } }
+.sheet h3 { margin: 0 0 6px; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.sheet p { margin: 0 0 16px; color: var(--sub); }
+.waiting { display: flex; align-items: center; gap: 10px; color: var(--sub); margin-bottom: 14px; }
+.spin { width: 18px; height: 18px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.found { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-bottom: 16px; }
+.found .net { padding: 12px; }
+.found .net b { font-weight: 500; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 14px; }
+.found .net span.choose { color: var(--accent); font-weight: 500; }
+.sheet .btns { display: flex; gap: 8px; }
+.sheet .btns button { flex: 1; }
 </style>
 </head>
 <body>
@@ -188,6 +203,10 @@ function render() {
     const ctl = input(f);
     if (f.type === "bool") {
       box.append(el("div", { class: "boolrow" }, lab, ctl));
+    } else if (f.detect) {
+      const det = el("button", { type: "button", text: f.detect.button });
+      det.addEventListener("click", () => openDetect(f));
+      box.append(lab, el("div", { class: "row" }, ctl, det));
     } else if (f.key === "wifi_ssid") {
       const scan = el("button", { type: "button", text: "Scan" });
       scan.addEventListener("click", () => doScan(scan));
@@ -332,6 +351,113 @@ async function action(what) {
   } catch (e) {
     notice(e.message || "Request failed.");
   }
+}
+
+// ---- detect dialog ----
+let det = null; // { key, timer, deadline, scrim }
+
+function formValues() {
+  const values = {};
+  for (const f of state.fields) {
+    if (f.secret) continue;
+    const c = $("f_" + f.key);
+    if (c) values[f.key] = f.type === "bool" ? (c.checked ? "1" : "0") : c.value.trim();
+  }
+  return values;
+}
+
+function closeDetect() {
+  if (!det) return;
+  clearTimeout(det.timer);
+  api("/api/setup/detect?key=" + det.key + "&do=stop", { method: "POST" }).catch(() => {});
+  det.scrim.remove();
+  det = null;
+}
+
+function detectView(f, body) {
+  const sheet = det.scrim.querySelector(".sheet");
+  sheet.textContent = "";
+  sheet.append(el("h3", { text: f.detect.title }), el("p", { text: f.detect.prompt }));
+  for (const b of body) sheet.append(b);
+}
+
+function cancelBtn(text) {
+  const b = el("button", { type: "button", text: text || "Cancel" });
+  b.addEventListener("click", closeDetect);
+  return b;
+}
+
+function retryBtn(f) {
+  const b = el("button", { type: "button", text: "Try Again" });
+  b.addEventListener("click", () => { closeDetect(); openDetect(f); });
+  return b;
+}
+
+async function openDetect(f) {
+  if (det) closeDetect();
+  const scrim = el("div", { class: "scrim" }, el("div", { class: "sheet" }));
+  scrim.addEventListener("click", (e) => { if (e.target === scrim) closeDetect(); });
+  document.body.append(scrim);
+  det = { key: f.key, timer: null, deadline: Date.now() + f.detect.timeout * 1000, scrim };
+  detectView(f, [el("div", { class: "waiting" }, el("span", { class: "spin" }), "Starting"),
+                 el("div", { class: "btns" }, cancelBtn())]);
+  try {
+    const r = await api("/api/setup/detect?key=" + f.key + "&do=start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: formValues() }),
+    });
+    const out = await r.json();
+    if (!det) return;
+    if (!out.ok) {
+      detectView(f, [el("div", { class: "err", text: out.error || "Could not start." }),
+                     el("div", { class: "btns" }, cancelBtn("Close"))]);
+      return;
+    }
+    pollDetect(f);
+  } catch (e) {
+    if (det) detectView(f, [el("div", { class: "err", text: e.message || "Request failed." }),
+                            el("div", { class: "btns" }, cancelBtn("Close"))]);
+  }
+}
+
+async function pollDetect(f) {
+  if (!det) return;
+  let out;
+  try {
+    out = await (await api("/api/setup/detect?key=" + f.key)).json();
+  } catch (e) {
+    out = { state: "failed", message: e.message || "Lost contact with the device.", found: [] };
+  }
+  if (!det) return;
+  const left = Math.max(0, Math.round((det.deadline - Date.now()) / 1000));
+  const parts = [];
+  if (out.found.length) {
+    const list = el("div", { class: "found" });
+    for (const c of out.found) {
+      const row = el("div", { class: "net" },
+        el("span", {}, el("b", { text: c.value }), el("br"), el("small", { text: c.label })),
+        el("span", { class: "choose", text: "Use" }));
+      row.addEventListener("click", () => {
+        $("f_" + f.key).value = c.value;
+        closeDetect();
+      });
+      list.append(row);
+    }
+    parts.push(list);
+  }
+  const done = out.state !== "waiting" || left === 0;
+  if (!done) {
+    parts.push(el("div", { class: "waiting" }, el("span", { class: "spin" }),
+      (out.message || (out.found.length ? "Listening for more" : "Listening")) + " (" + left + " s)"));
+  } else if (out.state === "failed") {
+    parts.push(el("div", { class: "err", text: out.message || "Detection failed." }));
+  } else if (!out.found.length) {
+    parts.push(el("div", { class: "err", text: out.message || "Nothing found." }));
+  }
+  parts.push(el("div", { class: "btns" }, ...(done ? [retryBtn(f)] : []), cancelBtn(done ? "Close" : "Cancel")));
+  detectView(f, parts);
+  if (!done) det.timer = setTimeout(() => pollDetect(f), 1000);
+  else api("/api/setup/detect?key=" + f.key + "&do=stop", { method: "POST" }).catch(() => {});
 }
 
 $("save").addEventListener("click", save);
